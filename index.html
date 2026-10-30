@@ -615,18 +615,28 @@ function shoot() {
   const origin = camera.position.clone();
   const ray = new THREE.Raycaster(origin, dir, 0.1, 200);
 
-  const targets = [];
+  const targetMeshes = [];
+  const meshToTarget = new Map();
+
   for (const id in others) {
     const o = others[id];
-    if (o.alive && o.mesh) targets.push({ obj: o.mesh, ref: o, id });
+    if (o.alive && o.mesh) {
+      o.mesh.traverse(obj => {
+        if (obj.isMesh) {
+          targetMeshes.push(obj);
+          meshToTarget.set(obj, { id, ref: o });
+        }
+      });
+    }
   }
-  const targetMeshes = targets.map(t => t.obj);
-  const hits = ray.intersectObjects([...targetMeshes, ...scene.children.filter(c => c.isMesh && !targetMeshes.includes(c))]);
+
+  const staticMeshes = scene.children.filter(c => c.isMesh);
+  const hits = ray.intersectObjects([...targetMeshes, ...staticMeshes], false);
 
   let hitPoint = origin.clone().add(dir.clone().multiplyScalar(200));
   for (const h of hits) {
-    const t = targets.find(tt => { let o = h.object; while (o) { if (o === tt.obj) return true; o = o.parent; } return false; });
     hitPoint = h.point;
+    const t = meshToTarget.get(h.object);
     if (t) {
       if (net.sendHit && !offlineMode) {
         net.sendHit.send({ targetId: t.id, damage: me.damage, killerName: myName });
@@ -1000,6 +1010,7 @@ function connect(roomCode) {
 
   room = joinRoom({ appId: 'arena-dm-app' }, fullRoom);
   myId = room.selfId;
+  console.log('myId =', myId);
 
   net.sendState = room.makeAction('state');
   net.sendShot = room.makeAction('shot');
@@ -1008,7 +1019,7 @@ function connect(roomCode) {
   net.sendHello = room.makeAction('hello');
 
   room.onPeerJoin = peerId => {
-    net.sendHello.send({ name: myName, color: myColor }, peerId);
+    net.sendHello.send({ name: myName, color: myColor }, [peerId]);
     net.sendState.send({
       pos: { x: me.x, y: me.y, z: me.z },
       yaw: me.yaw,
@@ -1018,7 +1029,7 @@ function connect(roomCode) {
       kills: me.kills,
       name: myName,
       color: myColor
-    }, peerId);
+    }, [peerId]);
     updateScore();
   };
 
@@ -1080,15 +1091,15 @@ function connect(roomCode) {
   };
 
   net.sendHit.onMessage = (data, peerId) => {
-    if (data.targetId === myId) {
-      me.health -= data.damage;
-      updateHealthUI();
-      Sound.hit();
-      flashHit();
-      hitFlash.classList.add('on');
-      setTimeout(() => hitFlash.classList.remove('on'), 150);
-      if (me.health <= 0) playerDie(data.killerName || 'Враг');
-    }
+    if (!data || data.targetId !== myId) return;
+    const dmg = Math.max(1, Math.min(Number(data.damage) || 0, 100));
+    me.health -= dmg;
+    updateHealthUI();
+    Sound.hit();
+    flashHit();
+    hitFlash.classList.add('on');
+    setTimeout(() => hitFlash.classList.remove('on'), 150);
+    if (me.health <= 0) playerDie(data.killerName || 'Враг');
   };
 
   net.sendDied.onMessage = (data, peerId) => {
@@ -1096,6 +1107,9 @@ function connect(roomCode) {
       others[peerId].alive = false;
       others[peerId].deaths = (others[peerId].deaths || 0) + 1;
       others[peerId].mesh.visible = false;
+    }
+    if (data.killerName === myName) {
+      me.kills++;
     }
     addFeed(data.killerName || 'Враг', others[peerId]?.name || 'Боец');
     updateScore();
